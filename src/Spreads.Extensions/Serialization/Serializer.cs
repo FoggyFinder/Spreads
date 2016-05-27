@@ -675,7 +675,7 @@ namespace Spreads.Serialization {
                                             new UIntPtr((uint) typeSize1),
                                             new UIntPtr((uint) (length*typeSize1)),
                                             srcPtr, new IntPtr(bufferPtr), bufferSize,
-                                            method1.ToString(), new UIntPtr((uint) 0),
+                                            "lz4", new UIntPtr((uint) 0),
                                             NumThreads
                                             );
                                         if (compSize <= 0) throw new ApplicationException("Invalid compression input");
@@ -704,7 +704,7 @@ namespace Spreads.Serialization {
                                             new UIntPtr((uint) typeSize1),
                                             new UIntPtr((uint) (length*typeSize1)),
                                             (IntPtr) srcBufferPtr, new IntPtr(bufferPtr), bufferSize,
-                                            method1.ToString(), new UIntPtr((uint) 0),
+                                            "lz4", new UIntPtr((uint) 0),
                                             NumThreads
                                             );
                                         if (compSize <= 0) throw new ApplicationException("Invalid compression input");
@@ -931,7 +931,7 @@ namespace Spreads.Serialization {
 
             if (compressionLevel < 0 || compressionLevel > 9) throw new ArgumentOutOfRangeException("Level must be in 0-9 range");
             if (typeSize < 1 || (typeSize > 255 && shuffle)) throw new ArgumentOutOfRangeException("TypeSize must be positive and <256 if shuffle is set to true");
-            var compressor = method.ToString();
+            var compressor = "lz4";
 
             if (src == null) throw new ArgumentNullException("src");
             if (!(new[] { "blosclz", "lz4", "lz4hc", "zlib" }.Contains(compressor))) {
