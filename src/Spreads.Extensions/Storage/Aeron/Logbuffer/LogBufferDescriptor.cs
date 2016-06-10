@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using System.Text;
 using System.Threading.Tasks;
 using Spreads.Serialization;
@@ -323,6 +324,7 @@ namespace Spreads.Storage.Aeron.Logbuffer {
          * @param logMetaDataBuffer    containing the meta data.
          * @param activePartitionIndex value of the active partition index used by the producer of this log.
          */
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static void ActivePartitionIndex(DirectBuffer logMetaDataBuffer, int activePartitionIndex) {
             logMetaDataBuffer.VolatileWriteInt32(LOG_ACTIVE_PARTITION_INDEX_OFFSET, activePartitionIndex);
         }
@@ -388,6 +390,7 @@ namespace Spreads.Storage.Aeron.Logbuffer {
          * @param initialTermId       the initial term id that this stream started on
          * @return the absolute position in bytes
          */
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static long ComputePosition(
             int activeTermId, int termOffset, int positionBitsToShift, int initialTermId) {
             long termCount = activeTermId - initialTermId; // copes with negative activeTermId on rollover
@@ -509,6 +512,7 @@ namespace Spreads.Storage.Aeron.Logbuffer {
          * @param activeIndex       current active index.
          * @param newTermId         to be used in the default headers.
          */
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static void RotateLog(
             LogBufferPartition[] logPartitions,
             DirectBuffer logMetaDataBuffer,
@@ -549,6 +553,7 @@ namespace Spreads.Storage.Aeron.Logbuffer {
          * @param termLength that the offset cannot exceed.
          * @return the termOffset value.
          */
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static int TermOffset(long rawTail, long termLength) {
             long tail = rawTail & 0xFFFFFFFFL;
 

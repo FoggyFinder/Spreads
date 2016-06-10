@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
@@ -108,7 +109,7 @@ namespace Spreads.Storage {
 
         public event OnAppendHandler OnAppend;
         public event ErrorHandler OnError;
-
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public long Claim(int length, out BufferClaim claim) {
             while (true) {
                 var partitionIndex = ActivePartitionIndex(_logBuffers.LogMetaData);
@@ -131,6 +132,7 @@ namespace Spreads.Storage {
         /// Get the current position to which the publication has advanced for this stream.
         /// </summary>
         /// <returns> the current position to which the publication has advanced for this stream. </returns>
+
         public long Position
         {
             get
@@ -141,7 +143,7 @@ namespace Spreads.Storage {
             }
         }
 
-
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private long NewPosition(int index, int currentTail, long position, long result) {
             long newPosition = TermAppender.TRIPPED;
             int termOffset = TermAppender.TermOffset(result);

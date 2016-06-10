@@ -235,6 +235,7 @@ namespace Spreads.Serialization {
             return Volatile.Read(ref *(int*)(new IntPtr(_data.ToInt64() + index)));
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void VolatileWriteInt32(long index, int value) {
             Assert(index, 4);
             Volatile.Write(ref *(int*)(new IntPtr(_data.ToInt64() + index)), value);
@@ -245,6 +246,7 @@ namespace Spreads.Serialization {
             return Volatile.Read(ref *(long*)(new IntPtr(_data.ToInt64() + index)));
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void VolatileWriteInt64(long index, long value) {
             Assert(index, 8);
             Volatile.Write(ref *(long*)(new IntPtr(_data.ToInt64() + index)), value);

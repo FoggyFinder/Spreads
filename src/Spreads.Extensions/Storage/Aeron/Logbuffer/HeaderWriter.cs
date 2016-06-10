@@ -1,4 +1,5 @@
 ﻿using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using System.Threading;
 using Spreads.Serialization;
 using Spreads.Storage.Aeron.Protocol;
@@ -25,6 +26,7 @@ namespace Spreads.Storage.Aeron.Logbuffer {
         /// <param name="offset">offset at which the header should be written.</param>
         /// <param name="length">length of the fragment including the header.</param>
         /// <param name="termId">termId of the current term buffer.</param>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public unsafe void Write(DirectBuffer termBuffer, int offset, int length, int termId)
         {
             var dataHeader = _defaultHeader; // copy struct by value

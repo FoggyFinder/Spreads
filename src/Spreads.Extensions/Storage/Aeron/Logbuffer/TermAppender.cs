@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -88,6 +89,7 @@ namespace Spreads.Storage.Aeron.Logbuffer {
         /// <param name="bufferClaim"> to be updated with the claimed region. </param>
         /// <returns> the resulting offset of the term after the append on success otherwise <seealso cref="#TRIPPED"/> or <seealso cref="#FAILED"/>
         /// packed with the termId if a padding record was inserted at the end. </returns>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public unsafe long Claim(HeaderWriter header, int length, out BufferClaim bufferClaim) {
 
             int frameLength = length + DataHeaderFlyweight.HEADER_LENGTH;
@@ -173,6 +175,7 @@ namespace Spreads.Storage.Aeron.Logbuffer {
             return (int)((long)((ulong)result >> 32));
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private long HandleEndOfLogCondition(
             DirectBuffer termBuffer,
             long termOffset,
