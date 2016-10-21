@@ -422,9 +422,9 @@ namespace Spreads {
         /// <summary>
         /// Projects values from source to destination and back
         /// </summary>
-        public static IPersistentOrderedMap<K, VDest> BiMap<K, VSrc, VDest>(this IOrderedMap<K, VSrc> innerMap,
-            Func<VSrc, VDest> srcToDest, Func<VDest, VSrc> destToSrc) {
-            return new ProjectValuesWrapper<K, VSrc, VDest>(innerMap, srcToDest, destToSrc);
-        }
+        //public static IPersistentOrderedMap<K, VDest> BiMap<K, VSrc, VDest>(this IOrderedMap<K, VSrc> innerMap,
+        //    Func<VSrc, VDest> srcToDest, Func<VDest, VSrc> destToSrc) {
+        //    return new ProjectValuesWrapper<K, VSrc, VDest>(innerMap, srcToDest, destToSrc);
+        //}
     }
 }

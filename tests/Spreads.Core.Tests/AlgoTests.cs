@@ -10,6 +10,7 @@ using System.Linq;
 using Spreads.Collections;
 using Spreads.Algorithms;
 using System.Numerics;
+using Spreads.Utils;
 
 namespace Spreads.Core.Tests {
 

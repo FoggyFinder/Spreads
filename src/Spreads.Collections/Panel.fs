@@ -185,16 +185,18 @@ and RowPanel<'TRowKey,'TColumnKey, 'TValue> (rows:Series<'TRowKey, 'TValue[]>, c
 
 
   override this.GetCursor() : ICursor<'TRowKey, Series<'TColumnKey, 'TValue>> = 
-    new BatchMapValuesCursor<'TRowKey,'TValue[],Series<'TColumnKey, 'TValue>>(Func<_>(rows.GetCursor), (fun vArr -> 
-      if isIndexed then
-          let res = IndexedMap.OfSortedKeysAndValues(columnKeys, vArr) :> Series<'TColumnKey, 'TValue>
-          // TODO IsMutable <- false
-          res
-        else
-          let res = SortedMap.OfSortedKeysAndValues(columnKeys, vArr) :> Series<'TColumnKey, 'TValue>
-          // TODO IsMutable <- false
-          res
-      ), Missing)
+    new BatchMapValuesCursor<'TRowKey,'TValue[],Series<'TColumnKey, 'TValue>>(Func<_>(rows.GetCursor), 
+      SimpleScalarMapping(
+      (fun vArr -> 
+        if isIndexed then
+            let res = IndexedMap.OfSortedKeysAndValues(columnKeys, vArr) :> Series<'TColumnKey, 'TValue>
+            // TODO IsMutable <- false
+            res
+          else
+            let res = SortedMap.OfSortedKeysAndValues(columnKeys, vArr) :> Series<'TColumnKey, 'TValue>
+            // TODO IsMutable <- false
+            res
+      ), null))
     :> ICursor<'TRowKey, Series<'TColumnKey, 'TValue>>
 
   // By being Series<>, Panel already implements IROOM for Rows

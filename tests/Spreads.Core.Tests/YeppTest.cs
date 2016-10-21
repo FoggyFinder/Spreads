@@ -6,6 +6,8 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading.Tasks;
 using Spreads;
+using Spreads.Yeppp;
+using Math = Spreads.Yeppp.Math;
 
 namespace Bootstrap {
     internal class YepppTest {
@@ -28,30 +30,30 @@ namespace Bootstrap {
             Array.Clear(pYeppp, 0, pYeppp.Length);
             Array.Clear(pNaive, 0, pYeppp.Length);
             /* Retrieve the number of timer ticks per second */
-            ulong frequency = Yeppp.Library.GetTimerFrequency();
+            ulong frequency = Spreads.Yeppp.Library.GetTimerFrequency();
             /* Retrieve the number of timer ticks before calling the C version of polynomial evaluation */
-            ulong startTimeNaive = Yeppp.Library.GetTimerTicks();
+            ulong startTimeNaive = Library.GetTimerTicks();
             /* Evaluate polynomial using C# implementation */
             for (int i = 0; i < rounds; i++) {
                 if(!EvaluatePolynomialNaive(x, y)) throw new ApplicationException();
                 //EvaluatePolynomialNaive(x, pNaive);
             }
             /* Retrieve the number of timer ticks after calling the C version of polynomial evaluation */
-            ulong endTimeNaive = Yeppp.Library.GetTimerTicks();
+            ulong endTimeNaive = Spreads.Yeppp.Library.GetTimerTicks();
             /* Retrieve the number of timer ticks before calling Yeppp! polynomial evaluation */
-            ulong startTimeYeppp = Yeppp.Library.GetTimerTicks();
+            ulong startTimeYeppp = Spreads.Yeppp.Library.GetTimerTicks();
             /* Evaluate polynomial using Yeppp! */
             for (int i = 0; i < rounds; i++) {
                 //Yeppp.Core.Subtract_V64fV64f_V64f(x, 0, y, 0, pYeppp, 0, x.Length);
                 //if(0.0 != Yeppp.Core.SumSquares_V64f_S64f(pYeppp, 0, x.Length)) throw new ApplicationException();
-                Yeppp.Core.Multiply_V64fS64f_V64f(x, 0, 3.1415, y, 0, x.Length);
+                Core.Multiply_V64fS64f_V64f(x, 0, 3.1415, y, 0, x.Length);
                 ////Yeppp.Core.Multiply_IV64fS64f_IV64f(x, 0, 3.1415, x.Length);
                 //Yeppp.Math.Exp_V64f_V64f(y, 0, pYeppp, 0, x.Length);
-                Yeppp.Math.Log_V64f_V64f(y, 0, pYeppp, 0, x.Length);
+                Math.Log_V64f_V64f(y, 0, pYeppp, 0, x.Length);
                 //Yeppp.Math.EvaluatePolynomial_V64fV64f_V64f(coefs, 0, x, 0, pYeppp, 0, coefs.Length, x.Length);
             }
             /* Retrieve the number of timer ticks after calling Yeppp! polynomial evaluation */
-            ulong endTimeYeppp = Yeppp.Library.GetTimerTicks();
+            ulong endTimeYeppp = Library.GetTimerTicks();
             /* Compute time in seconds and performance in FLOPS */
             double secsNaive = ((double) (endTimeNaive - startTimeNaive))/((double) (frequency));
             double secsYeppp = ((double) (endTimeYeppp - startTimeYeppp))/((double) (frequency));
@@ -103,7 +105,7 @@ namespace Bootstrap {
             //return xArray.SequenceEqual(yArray);
             //double[] z = new double[xArray.Length];
             for (int i = 0; i < xArray.Length; i++) {
-                yArray[i] = Math.Log(xArray[i]*3.1415); //Math.Log(xArray[i]*2);
+                yArray[i] = System.Math.Log(xArray[i]*3.1415); //Math.Log(xArray[i]*2);
             }
             return true;
         }
@@ -116,8 +118,8 @@ namespace Bootstrap {
             for (int index = 0; index < xArray.Length; index++) {
                 if (xArray[index] == 0.0)
                     continue;
-                double diff = Math.Abs(xArray[index] - yArray[index])/Math.Abs(xArray[index]);
-                maxDiff = Math.Max(maxDiff, diff);
+                double diff = System.Math.Abs(xArray[index] - yArray[index])/ System.Math.Abs(xArray[index]);
+                maxDiff = System.Math.Max(maxDiff, diff);
             }
             return maxDiff;
         }

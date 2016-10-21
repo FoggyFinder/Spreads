@@ -1,12 +1,9 @@
 ﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Runtime.CompilerServices;
-using System.Text;
-using System.Threading.Tasks;
 using System.Numerics;
+using System.Runtime.CompilerServices;
+using Spreads.Algorithms;
 
-namespace Spreads.Algorithms {
+namespace Spreads.Core.Tests {
     public static class SimdMath {
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static void SIMDAdd(this Algo.MathProvider provider, float[] array, float scalar, float[] result, int count) {

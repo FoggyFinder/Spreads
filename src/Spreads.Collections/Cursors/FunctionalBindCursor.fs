@@ -288,6 +288,6 @@ type internal FunctionalBindCursor<'K,'V,'State,'V2>
     member this.Clone() = this.Clone() :> ICursor<'K,'V2>
 
   interface ICanMapSeriesValues<'K,'V2> with
-    member this.Map<'V3>(f2, _): Series<'K,'V3> = 
-      let combinedFunc = CoreUtils.CombineMaps(stateMapper, Func<_,_>(f2))
+    member this.Map<'V3>(mapping): Series<'K,'V3> = 
+      let combinedFunc = CoreUtils.CombineMaps(stateMapper, mapping.ScalarFunc)
       new FunctionalBindCursor<'K,'V,'State,'V3>((fun _ -> cursor.Clone()), stateCreator, stateFoldNext, stateFoldPrevious, combinedFunc, isContinuous) :> Series<'K,'V3>

@@ -116,6 +116,7 @@
     <Reference Include="System.Xml" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="SIMDTests.cs" />
     <Compile Include="SpanTests.cs" />
     <Compile Include="AlgoTests.cs" />
     <Compile Include="SerializationTests.cs" />
