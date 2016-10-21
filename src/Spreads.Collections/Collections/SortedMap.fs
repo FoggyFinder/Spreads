@@ -62,7 +62,7 @@ type SortedMap<'K,'V>
   [<DefaultValueAttribute>]
   val mutable internal size : int
   [<DefaultValueAttribute>]
-  val mutable internal keys : 'K array
+  val mutable internal keys : OwnedArray<'K>
   [<DefaultValueAttribute>]
   val mutable internal values : 'V array
 
@@ -113,8 +113,8 @@ type SortedMap<'K,'V>
         // but for regular keys we alway need a fixed-length array of size 2, so we allocate a new one.
         // TODO wrap the corefx buffer and for len = 2 use a special self-adjusting ObjectPool, because these 
         // arrays are not short-lived and could accumulate in gen 1+ easily.
-        Array.zeroCreate 2
-      else Impl.ArrayPool<'K>.Rent(tempCap) 
+        new OwnedArray<_>(Array.zeroCreate 2)
+      else new OwnedArray<_>(tempCap) 
     this.values <- Impl.ArrayPool<'V>.Rent(tempCap)
 
     if dictionary.IsSome && dictionary.Value.Count > 0 then
@@ -128,7 +128,7 @@ type SortedMap<'K,'V>
           couldHaveRegularKeys <- map.IsRegular
           this.SetCapacity(map.size)
           this.size <- map.size
-          Array.Copy(map.keys, 0, this.keys, 0, map.size)
+          Array.Copy(map.keys.Array, 0, this.keys.Array, 0, map.size)
           Array.Copy(map.values, 0, this.values, 0, map.size)
         finally
           exitWriteLockIf &map.locker entered
@@ -153,13 +153,13 @@ type SortedMap<'K,'V>
             let isReg, step, regularKeys = this.rkCheckArray tempKeys this.size (comparer :?> IKeyComparer<'K>)
             couldHaveRegularKeys <- isReg
             if couldHaveRegularKeys then 
-              this.keys <- regularKeys
+              this.keys <- new OwnedArray<_>(regularKeys)
               Impl.ArrayPool<_>.Return(tempKeys, true) |> ignore
               rkLast <- this.rkKeyAtIndex (this.size - 1)
             else
-              this.keys <- tempKeys
+              this.keys <- new OwnedArray<_>(tempKeys)
           else
-            this.keys <- tempKeys
+            this.keys <- new OwnedArray<_>(tempKeys)
         finally
           exitLockIf sr entered
         
@@ -189,7 +189,7 @@ type SortedMap<'K,'V>
               let mutable valuesSegment = Unchecked.defaultof<ArraySegment<'V>>
               let valuesLen = CompressedArrayBinaryConverter<'V>.Instance.Read(ptr, &valuesSegment)
               Debug.Assert((totalSize = 8 + 14 + keysLen + valuesLen))
-              let sm : SortedMap<'K,'V> = SortedMap.OfSortedKeysAndValues(keys, valuesSegment.Array, mapSize, KeyComparer.GetDefault<'K>(), false, isRegular)
+              let sm : SortedMap<'K,'V> = SortedMap.OfSortedKeysAndValues(new OwnedArray<_>(keys), valuesSegment.Array, mapSize, KeyComparer.GetDefault<'K>(), false, isRegular)
               sm.version <- mapVersion
               sm.nextVersion <- mapVersion
               sm.orderVersion <- mapVersion
@@ -214,7 +214,7 @@ type SortedMap<'K,'V>
     #endif
     if rkStep_ > 0L then rkStep_
     elif this.size > 1 then
-      rkStep_ <- diffCalc.Diff(this.keys.[1], this.keys.[0])
+      rkStep_ <- diffCalc.Diff(this.keys.Array.[1], this.keys.Array.[0])
       rkStep_
     else raise (InvalidOperationException("Cannot calculate regular keys step for a single element in a map or an empty map"))
   
@@ -222,7 +222,7 @@ type SortedMap<'K,'V>
   [<MethodImplAttribute(MethodImplOptions.AggressiveInlining)>]
   member private this.rkKeyAtIndex (idx:int) : 'K =
     let step = this.rkGetStep()
-    diffCalc.Add(this.keys.[0], (int64 idx) * step)
+    diffCalc.Add(this.keys.Array.[0], (int64 idx) * step)
   
   [<MethodImplAttribute(MethodImplOptions.AggressiveInlining)>]
   member private this.rkIndexOfKey (key:'K) : int =
@@ -230,7 +230,7 @@ type SortedMap<'K,'V>
     Trace.Assert(this.size > 1)
     #endif
 
-    let diff = diffCalc.Diff(key, this.keys.[0])
+    let diff = diffCalc.Diff(key, this.keys.Array.[0])
     let step = this.rkGetStep()
     let idxL : int64 = (diff / step)
     let modulo = (diff - step * idxL)
@@ -262,7 +262,7 @@ type SortedMap<'K,'V>
   [<MethodImplAttribute(MethodImplOptions.AggressiveInlining)>]
   member private this.rkMaterialize () =
     let step = this.rkGetStep()
-    Array.init this.values.Length (fun i -> if i < this.size then diffCalc.Add(this.keys.[0], (int64 i)*step) else Unchecked.defaultof<'K>)
+    Array.init this.values.Length (fun i -> if i < this.size then diffCalc.Add(this.keys.Array.[0], (int64 i)*step) else Unchecked.defaultof<'K>)
 
   [<MethodImplAttribute(MethodImplOptions.AggressiveInlining)>]
   member private this.rkCheckArray (sortedArray:'K[]) (size:int) (dc:IKeyComparer<'K>) : bool * int * 'K array = 
@@ -294,7 +294,7 @@ type SortedMap<'K,'V>
   [<MethodImplAttribute(MethodImplOptions.AggressiveInlining)>]
   member internal this.GetKeyByIndexUnchecked(index) =
     if couldHaveRegularKeys && this.size > 1 then this.rkKeyAtIndex index
-    else this.keys.[index]
+    else this.keys.Array.[index]
 
   [<MethodImplAttribute(MethodImplOptions.AggressiveInlining)>]
   member internal this.GetKeyByIndex(index) =
@@ -306,11 +306,11 @@ type SortedMap<'K,'V>
     if couldHaveRegularKeys && this.size > 1 then
       Trace.Assert(uint32 index < uint32 this.size, "Index must be checked before calling GetPairByIndexUnchecked")
       KeyValuePair(this.rkKeyAtIndex index, this.values.[index])
-    else KeyValuePair(this.keys.[index], this.values.[index]) 
+    else KeyValuePair(this.keys.Array.[index], this.values.[index]) 
   
   [<MethodImplAttribute(MethodImplOptions.AggressiveInlining)>]
   member private this.CompareToFirst (k:'K) =
-    comparer.Compare(k, this.keys.[0]) // keys.[0] is always the first key even for regular keys
+    comparer.Compare(k, this.keys.Array.[0]) // keys.[0] is always the first key even for regular keys
   
   [<MethodImplAttribute(MethodImplOptions.AggressiveInlining)>]
   member private this.CompareToLast (k:'K) =
@@ -319,7 +319,7 @@ type SortedMap<'K,'V>
       Trace.Assert(not <| Unchecked.equals rkLast Unchecked.defaultof<'K>)
       #endif
       comparer.Compare(k, rkLast)
-    else comparer.Compare(k, this.keys.[this.size-1])
+    else comparer.Compare(k, this.keys.Array.[this.size-1])
 
   [<MethodImplAttribute(MethodImplOptions.AggressiveInlining)>]
   member private this.EnsureCapacity(min) = 
@@ -338,7 +338,7 @@ type SortedMap<'K,'V>
     if this.size = this.values.Length then this.EnsureCapacity(this.size + 1)
     #if PRERELEASE
     Trace.Assert(index <= this.size, "index must be <= this.size")
-    Trace.Assert(couldHaveRegularKeys || (this.values.Length = this.keys.Length), "keys and values must have equal length for non-regular case")
+    Trace.Assert(couldHaveRegularKeys || (this.values.Length = this.keys.Array.Length), "keys and values must have equal length for non-regular case")
     #endif
     // for values it is alway the same operation
     if index < this.size then Array.Copy(this.values, index, this.values, index + 1, this.size - index);
@@ -351,12 +351,12 @@ type SortedMap<'K,'V>
         if comparer.Compare(diffCalc.Add(rkLast, step), k) = 0 then
           // adding next regular, only rkLast changes
           rkLast <- k
-        elif comparer.Compare(diffCalc.Add(this.keys.[0], -step), k) = 0 then
-          this.keys.[1] <- this.keys.[0]
-          this.keys.[0] <- k // change first key and size++ at the bottom
+        elif comparer.Compare(diffCalc.Add(this.keys.Array.[0], -step), k) = 0 then
+          this.keys.Array.[1] <- this.keys.Array.[0]
+          this.keys.Array.[0] <- k // change first key and size++ at the bottom
           //rkLast is unchanged
         else
-          let diff = diffCalc.Diff(k, this.keys.[0])
+          let diff = diffCalc.Diff(k, this.keys.Array.[0])
           let idxL : int64 = (diff / step)
           let modIsOk = (diff - step * idxL) = 0L // gives 13% boost for add compared to diff % step
           let idx = int idxL 
@@ -366,20 +366,20 @@ type SortedMap<'K,'V>
             Environment.FailFast(msg, new ApplicationException(msg))            
           else
             // insertting more than 1 away from end or before start, with a hole
-            this.keys <- this.rkMaterialize() 
+            this.keys <- new OwnedArray<_>(this.rkMaterialize())
             couldHaveRegularKeys <- false
       else
         if index < this.size then
-          Array.Copy(this.keys, index, this.keys, index + 1, this.size - index);
+          Array.Copy(this.keys.Array, index, this.keys.Array, index + 1, this.size - index);
         else 
           rkLast <- k
-        this.keys.[index] <- k
+        this.keys.Array.[index] <- k
         
     // couldHaveRegularKeys could be set to false inside the previous block even if it was true before
     if not couldHaveRegularKeys then
       if index < this.size then
-        Array.Copy(this.keys, index, this.keys, index + 1, this.size - index);
-      this.keys.[index] <- k
+        Array.Copy(this.keys.Array, index, this.keys.Array, index + 1, this.size - index);
+      this.keys.Array.[index] <- k
       // do not check if could regularize back, it is very rare 
       // that an irregular becomes a regular one, and such check is always done on
       // bucket switch in SHM (TODO really? check) and before serialization
@@ -455,7 +455,7 @@ type SortedMap<'K,'V>
       // first, take new buffers. this could cause out-of-memory
       let kArr : 'K array = 
         if couldHaveRegularKeys then
-          Trace.Assert(this.keys.Length = 2)
+          Trace.Assert(this.keys.Array.Length = 2)
           Unchecked.defaultof<_>
         else
           Impl.ArrayPool<_>.Rent(c)
@@ -469,10 +469,10 @@ type SortedMap<'K,'V>
         //try ()
         //finally
         if not couldHaveRegularKeys then
-          Array.Copy(this.keys, 0, kArr, 0, this.size)
+          Array.Copy(this.keys.Array, 0, kArr, 0, this.size)
           let toReturn = this.keys
-          this.keys <- kArr
-          Impl.ArrayPool<_>.Return(toReturn, true) |> ignore
+          this.keys <- new OwnedArray<_>(kArr)
+          toReturn.Dispose()
         Array.Copy(this.values, 0, vArr, 0, this.size)
         let toReturn = this.values
         this.values <- vArr
@@ -507,10 +507,10 @@ type SortedMap<'K,'V>
         entered <- enterWriteLockIf &this.locker this.isSynchronized
         if entered then Interlocked.Increment(&this.nextVersion) |> ignore
       if couldHaveRegularKeys then
-        Trace.Assert(this.keys.Length = 2)
-        Array.Clear(this.keys, 0, 2)
+        Trace.Assert(this.keys.Array.Length = 2)
+        this.keys <- this.keys.Clear()
       else
-        Array.Clear(this.keys, 0, this.size)
+        this.keys <- this.keys.Clear()
       Array.Clear(this.values, 0, this.size)
       this.size <- 0
       increment &this.orderVersion
@@ -540,7 +540,7 @@ type SortedMap<'K,'V>
             if couldHaveRegularKeys && this.size > 2 then
               Array.Copy(this.rkMaterialize(), 0, array, arrayIndex, this.size)
             else
-              Array.Copy(this.keys, 0, array, arrayIndex, this.size)
+              Array.Copy(this.keys.Array, 0, array, arrayIndex, this.size)
           finally
             exitWriteLockIf &this.locker entered
 
@@ -563,8 +563,8 @@ type SortedMap<'K,'V>
                   raise (InvalidOperationException("Collection changed during enumeration"))
                 if index.Value < this.size then
                   currentKey := 
-                    if couldHaveRegularKeys && this.size > 1 then diffCalc.Add(this.keys.[0], (int64 !index)*this.rkGetStep()) 
-                    else this.keys.[!index]
+                    if couldHaveRegularKeys && this.size > 1 then diffCalc.Add(this.keys.Array.[0], (int64 !index)*this.rkGetStep()) 
+                    else this.keys.Array.[!index]
                   index := nextIndex
                   true
                 else
@@ -650,7 +650,7 @@ type SortedMap<'K,'V>
   [<MethodImplAttribute(MethodImplOptions.AggressiveInlining)>]
   member internal this.IndexOfKeyUnchecked(key:'K) : int =
     if couldHaveRegularKeys && this.size > 1 then this.rkIndexOfKey key
-    else Array.BinarySearch(this.keys, 0, this.size, key, comparer)
+    else Array.BinarySearch(this.keys.Array, 0, this.size, key, comparer)
 
   [<MethodImplAttribute(MethodImplOptions.AggressiveInlining)>]
   member this.IndexOfKey(key:'K) : int =
@@ -677,7 +677,7 @@ type SortedMap<'K,'V>
     with get() =
       readLockIf &this.nextVersion &this.version this.isSynchronized (fun _ ->
         if this.size = 0 then raise (InvalidOperationException("Could not get the first element of an empty map"))
-        KeyValuePair(this.keys.[0], this.values.[0])
+        KeyValuePair(this.keys.Array.[0], this.values.[0])
       )
 
   member this.Last
@@ -685,9 +685,9 @@ type SortedMap<'K,'V>
       readLockIf &this.nextVersion &this.version this.isSynchronized (fun _ ->
         if this.size = 0 then raise (InvalidOperationException("Could not get the last element of an empty map"))
         if couldHaveRegularKeys && this.size > 1 then
-          Trace.Assert(comparer.Compare(rkLast, diffCalc.Add(this.keys.[0], (int64 (this.size-1))*this.rkGetStep())) = 0)
+          Trace.Assert(comparer.Compare(rkLast, diffCalc.Add(this.keys.Array.[0], (int64 (this.size-1))*this.rkGetStep())) = 0)
           KeyValuePair(rkLast, this.values.[this.size - 1])
-        else KeyValuePair(this.keys.[this.size - 1], this.values.[this.size - 1])
+        else KeyValuePair(this.keys.Array.[this.size - 1], this.values.[this.size - 1])
       )
 
   
@@ -867,26 +867,26 @@ type SortedMap<'K,'V>
     // keys
     if couldHaveRegularKeys && this.size > 2 then // will have >= 2 after removal
       if index = 0 then
-        this.keys.[0] <- (diffCalc.Add(this.keys.[0], this.rkGetStep())) // change first key to next and size--
-        this.keys.[1] <- (diffCalc.Add(this.keys.[0], this.rkGetStep())) // add step to the new first value
+        this.keys.Array.[0] <- (diffCalc.Add(this.keys.Array.[0], this.rkGetStep())) // change first key to next and size--
+        this.keys.Array.[1] <- (diffCalc.Add(this.keys.Array.[0], this.rkGetStep())) // add step to the new first value
       elif index = newSize then 
-        rkLast <- diffCalc.Add(this.keys.[0], (int64 (newSize-1))*this.rkGetStep()) // removing last, only size--
+        rkLast <- diffCalc.Add(this.keys.Array.[0], (int64 (newSize-1))*this.rkGetStep()) // removing last, only size--
       else
         // removing within range,  creating a hole
-        this.keys <- this.rkMaterialize()
+        this.keys <- new OwnedArray<_>(this.rkMaterialize())
         couldHaveRegularKeys <- false
     elif couldHaveRegularKeys && this.size = 2 then // will have single value with undefined step
       if index = 0 then
-        this.keys.[0] <- this.keys.[1]
-        this.keys.[1] <- Unchecked.defaultof<'K>
+        this.keys.Array.[0] <- this.keys.Array.[1]
+        this.keys.Array.[1] <- Unchecked.defaultof<'K>
       elif index = 1 then
-        rkLast <- this.keys.[0]
+        rkLast <- this.keys.Array.[0]
       rkStep_ <- 0L
 
     if not couldHaveRegularKeys || this.size = 1 then
       if index < this.size then
-        Array.Copy(this.keys, index + 1, this.keys, index, newSize - index) // this.size
-      this.keys.[newSize] <- Unchecked.defaultof<'K>
+        Array.Copy(this.keys.Array, index + 1, this.keys.Array, index, newSize - index) // this.size
+      this.keys.Array.[newSize] <- Unchecked.defaultof<'K>
       
     // values
     if index < newSize then
@@ -933,7 +933,7 @@ type SortedMap<'K,'V>
         entered <- enterWriteLockIf &this.locker this.isSynchronized
         if entered then Interlocked.Increment(&this.nextVersion) |> ignore
       if this.size > 0 then
-        result <- KeyValuePair(this.keys.[0], this.values.[0])
+        result <- KeyValuePair(this.keys.Array.[0], this.values.[0])
         this.RemoveAt(0)
         increment &this.orderVersion
         removed <- true
@@ -960,9 +960,9 @@ type SortedMap<'K,'V>
       if this.size > 0 then
         result <-
           if couldHaveRegularKeys && this.size > 1 then
-            Trace.Assert(comparer.Compare(rkLast, diffCalc.Add(this.keys.[0], (int64 (this.size-1))*this.rkGetStep())) = 0)
+            Trace.Assert(comparer.Compare(rkLast, diffCalc.Add(this.keys.Array.[0], (int64 (this.size-1))*this.rkGetStep())) = 0)
             KeyValuePair(rkLast, this.values.[this.size - 1])
-          else KeyValuePair(this.keys.[this.size - 1], this.values.[this.size - 1])
+          else KeyValuePair(this.keys.Array.[this.size - 1], this.values.[this.size - 1])
         this.RemoveAt(this.size - 1)
         increment &this.orderVersion
         removed <- true
@@ -1009,15 +1009,15 @@ type SortedMap<'K,'V>
             this.size <- this.size - (pivotIndex + 1)
             
             if couldHaveRegularKeys then
-              this.keys.[0] <- (diffCalc.Add(this.keys.[0], int64 (pivotIndex+1)))
+              this.keys.Array.[0] <- (diffCalc.Add(this.keys.Array.[0], int64 (pivotIndex+1)))
               if this.size > 1 then 
-                this.keys.[1] <- (diffCalc.Add(this.keys.[0], this.rkGetStep())) 
+                this.keys.Array.[1] <- (diffCalc.Add(this.keys.Array.[0], this.rkGetStep())) 
               else
-                this.keys.[1] <- Unchecked.defaultof<'K>
+                this.keys.Array.[1] <- Unchecked.defaultof<'K>
                 rkStep_ <- 0L
             else
-              Array.Copy(this.keys, pivotIndex + 1, this.keys, 0, this.size) // move this.values to 
-              Array.fill this.keys this.size (this.values.Length - this.size) Unchecked.defaultof<'K>
+              Array.Copy(this.keys.Array, pivotIndex + 1, this.keys.Array, 0, this.size) // move this.values to 
+              Array.fill this.keys.Array this.size (this.values.Length - this.size) Unchecked.defaultof<'K>
 
             Array.Copy(this.values, pivotIndex + 1, this.values, 0, this.size)
             Array.fill this.values this.size (this.values.Length - this.size) Unchecked.defaultof<'V>
@@ -1034,14 +1034,14 @@ type SortedMap<'K,'V>
             this.size <- pivotIndex
             if couldHaveRegularKeys then
               if this.size > 1 then
-                rkLast <- diffCalc.Add(this.keys.[0], (int64 (this.size-1))*this.rkGetStep()) // -1 is correct, the size is updated on the previous line
+                rkLast <- diffCalc.Add(this.keys.Array.[0], (int64 (this.size-1))*this.rkGetStep()) // -1 is correct, the size is updated on the previous line
               else
-                this.keys.[1] <- Unchecked.defaultof<'K>
+                this.keys.Array.[1] <- Unchecked.defaultof<'K>
                 rkStep_ <- 0L
-                if this.size = 1 then rkLast <- this.keys.[0] 
+                if this.size = 1 then rkLast <- this.keys.Array.[0] 
                 else rkLast <- Unchecked.defaultof<_>
             if not couldHaveRegularKeys then
-              Array.fill this.keys pivotIndex (this.values.Length - pivotIndex) Unchecked.defaultof<'K>
+              Array.fill this.keys.Array pivotIndex (this.values.Length - pivotIndex) Unchecked.defaultof<'K>
             Array.fill this.values pivotIndex (this.values.Length - pivotIndex) Unchecked.defaultof<'V>
             this.SetCapacity(this.size)
 
@@ -1078,10 +1078,10 @@ type SortedMap<'K,'V>
           result <- 
             if couldHaveRegularKeys && this.size > 1 then
               #if PRERELEASE
-              Trace.Assert(comparer.Compare(rkLast, diffCalc.Add(this.keys.[0], (int64 (this.size-1))*this.rkGetStep())) = 0)
+              Trace.Assert(comparer.Compare(rkLast, diffCalc.Add(this.keys.Array.[0], (int64 (this.size-1))*this.rkGetStep())) = 0)
               #endif
               KeyValuePair(rkLast, this.values.[this.size - 1])
-            else KeyValuePair(this.keys.[this.size - 1], this.values.[this.size - 1])
+            else KeyValuePair(this.keys.Array.[this.size - 1], this.values.[this.size - 1])
           lastIdx
         else
           let index = this.IndexOfKeyUnchecked(key)
@@ -1146,7 +1146,7 @@ type SortedMap<'K,'V>
               result <- this.GetPairByIndexUnchecked(index2 - 1)
               index2 - 1
       | Lookup.GT ->
-        let lc = if this.size > 0 then comparer.Compare(key, this.keys.[0]) else 2
+        let lc = if this.size > 0 then comparer.Compare(key, this.keys.Array.[0]) else 2
         if lc = 0 then // key = first key
           if this.size > 1 then
             result <- this.GetPairByIndexUnchecked(1) // return item after first
@@ -1170,7 +1170,7 @@ type SortedMap<'K,'V>
               result <- this.GetPairByIndexUnchecked(index2)
               index2
       | Lookup.GE ->
-        let lc = if this.size > 0 then comparer.Compare(key, this.keys.[0]) else 2
+        let lc = if this.size > 0 then comparer.Compare(key, this.keys.Array.[0]) else 2
         if lc <= 0 then // key = first key or smaller than the first key
           result <- this.GetPairByIndexUnchecked(0)
           0
@@ -1287,7 +1287,7 @@ type SortedMap<'K,'V>
   member this.TrimExcess() = this.Capacity <- this.size
 
   member private this.Dispose(disposing:bool) =
-    if not couldHaveRegularKeys then Impl.ArrayPool<_>.Return(this.keys, true) |> ignore
+    this.keys.Dispose()
     Impl.ArrayPool<_>.Return(this.values, true) |> ignore
     if disposing then GC.SuppressFinalize(this)
   
@@ -1304,7 +1304,7 @@ type SortedMap<'K,'V>
     member this.Version with get() = this.version
     member this.IsRegular with get() = this.IsRegular
     member this.IsReadOnly with get() = this.IsReadOnly
-    member this.Keys with get() = this.keys
+    member this.Keys with get() = this.keys.Array
     member this.Values with get() = this.values
 
   interface IDisposable with
@@ -1357,7 +1357,7 @@ type SortedMap<'K,'V>
         if arrayIndex < 0 || arrayIndex > array.Length then raise (ArgumentOutOfRangeException("arrayIndex"))
         if array.Length - arrayIndex < this.Count then raise (ArgumentException("ArrayPlusOffTooSmall"))
         for index in 0..this.Count do
-          let kvp = KeyValuePair(this.Keys.[index], this.Values.[index])
+          let kvp = KeyValuePair(this.keys.Array.[index], this.Values.[index])
           array.[arrayIndex + index] <- kvp
       finally
         exitWriteLockIf &this.locker entered
@@ -1506,10 +1506,17 @@ type SortedMap<'K,'V>
       let series =
         { new Series<'K,'V2>() with
             member __.GetCursor() = 
-              let keys = Array.zeroCreate this.keys.Length // Impl.ArrayPool<'K>.Rent(this.size)
-              Array.Copy(this.keys, keys, this.size)
+              let keys =
+                // NB reusing keys array only for the read-only case
+                if this.IsReadOnly then
+                  Console.WriteLine("Reusing keys")
+                  this.keys.Rent()
+                else
+                  Console.WriteLine("Renting keys from pool")
+                  new OwnedArray<_>(Impl.ArrayPool<'K>.Rent(this.keys.Array.Length))
               let values : 'V2[] = 
                 if fBatch.IsPresent then
+                  //Console.WriteLine("Batching")
                   let segment = fBatch.Present(ArraySegment(this.values, 0, this.size))
                   segment.Array
                 else 
@@ -1546,24 +1553,24 @@ type SortedMap<'K,'V>
   internal new(dictionary:IDictionary<'K,'V>,comparer:IComparer<'K>) = new SortedMap<_,_>(Some(dictionary), Some(dictionary.Count), Some(comparer))
   internal new(minimumCapacity:int,comparer:IComparer<'K>) = new SortedMap<_,_>(None, Some(minimumCapacity), Some(comparer))
 
-  static member internal OfSortedKeysAndValues(keys:'K[], values:'V[], size:int, comparer:IComparer<'K>, doCheckSorted:bool, isAlreadyRegular) =
-    if keys.Length < size && not isAlreadyRegular then raise (new ArgumentException("Keys array is smaller than provided size"))
+  static member internal OfSortedKeysAndValues(keys:OwnedArray<'K>, values:'V[], size:int, comparer:IComparer<'K>, doCheckSorted:bool, isAlreadyRegular) =
+    if keys.Array.Length < size && not isAlreadyRegular then raise (new ArgumentException("Keys array is smaller than provided size"))
     if values.Length < size then raise (new ArgumentException("Values array is smaller than provided size"))
     let sm = new SortedMap<'K,'V>(comparer)
     if doCheckSorted then
       for i in 1..size-1 do
-        if comparer.Compare(keys.[i-1], keys.[i]) >= 0 then raise (new ArgumentException("Keys are not sorted"))
+        if comparer.Compare(keys.Array.[i-1], keys.Array.[i]) >= 0 then raise (new ArgumentException("Keys are not sorted"))
 
     // at this point IsRegular means could be regular
     if sm.IsRegular && not isAlreadyRegular then
-      let isReg, step, firstArr = sm.rkCheckArray keys size (sm.Comparer :?> IKeyComparer<'K>)
+      let isReg, step, firstArr = sm.rkCheckArray keys.Array size (sm.Comparer :?> IKeyComparer<'K>)
       if isReg then
-        sm.keys <- firstArr
+        sm.keys <- new OwnedArray<_>(firstArr)
       else 
         sm.IsRegular <- false
         sm.keys <- keys
     elif sm.IsRegular && isAlreadyRegular then
-      Trace.Assert(keys.Length >= 2)
+      Trace.Assert(keys.Array.Length >= 2)
       sm.keys <- keys
     elif not sm.IsRegular && not isAlreadyRegular then
       sm.IsRegular <- false
@@ -1578,7 +1585,7 @@ type SortedMap<'K,'V>
   /// Create a SortedMap using the first `size` elements of the provided keys and values.
   static member OfSortedKeysAndValues(keys:'K[], values:'V[], size:int, comparer:IComparer<'K>) =
     if comparer = Unchecked.defaultof<_> then raise (ArgumentNullException("comparer"))
-    else SortedMap.OfSortedKeysAndValues(keys, values, size, comparer, true, false)
+    else SortedMap.OfSortedKeysAndValues(new OwnedArray<_>(keys), values, size, comparer, true, false)
 
   /// Create a SortedMap using the first `size` elements of the provided keys and values, with default comparer.
   static member OfSortedKeysAndValues(keys:'K[], values:'V[], size:int) =
@@ -1586,7 +1593,7 @@ type SortedMap<'K,'V>
       let kc = KeyComparer.GetDefault<'K>()
       if kc = Unchecked.defaultof<_> then Comparer<'K>.Default :> IComparer<'K> 
       else kc
-    SortedMap.OfSortedKeysAndValues(keys, values, size, comparer, true, false)
+    SortedMap.OfSortedKeysAndValues(new OwnedArray<_>(keys), values, size, comparer, true, false)
 
   static member OfSortedKeysAndValues(keys:'K[], values:'V[]) =
     if keys.Length <> values.Length then raise (new ArgumentException("Keys and values arrays are of different sizes"))
@@ -1601,11 +1608,11 @@ type SortedMap<'K,'V>
     elif smA.IsRegular && smB.IsRegular 
       && smA.RegularStep = smB.RegularStep
       && smA.Comparer.Equals(smB.Comparer) // TODO test custom comparer equality, custom comparers must implement equality
-      && smA.Comparer.Compare(smA.keys.[0], smB.keys.[0]) = 0 then // if steps are equal we could skip checking second elements in keys
+      && smA.Comparer.Compare(smA.keys.Array.[0], smB.keys.Array.[0]) = 0 then // if steps are equal we could skip checking second elements in keys
       true
     else
       // this is very slow to be used in any "optimization", should use BytesExtensions.UnsafeCompare
-      System.Linq.Enumerable.SequenceEqual(smA.keys, smB.keys)
+      System.Linq.Enumerable.SequenceEqual(smA.keys.Array, smB.keys.Array)
 
   static member Empty = empty.Value
 

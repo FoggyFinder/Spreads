@@ -24,7 +24,7 @@ type SortedMapTests() =
         Assert.IsTrue(sm.Keys.SequenceEqual(keys))
         Assert.IsTrue(sm.Values.SequenceEqual(values))
         Assert.IsTrue(not sm.IsRegular)
-        Assert.IsTrue(sm.keys.Length = keys.Length)
+        Assert.IsTrue(sm.keys.Array.Length = keys.Length)
         ()
 
     [<Test>]
@@ -35,7 +35,7 @@ type SortedMapTests() =
         Assert.IsTrue(sm.Keys.SequenceEqual(keys))
         Assert.IsTrue(sm.Values.SequenceEqual(values))
         Assert.IsTrue(sm.IsRegular)
-        Assert.IsTrue(sm.keys.Length = 2)
+        Assert.IsTrue(sm.keys.Array.Length = 2)
         ()
 
     [<Test>]

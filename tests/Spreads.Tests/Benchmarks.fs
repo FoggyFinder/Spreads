@@ -766,12 +766,15 @@ module CollectionsBenchmarks =
     smap := Spreads.Collections.SortedMap(comparer = (dc :> IComparer<int64>))
 
     smap.Value.IsSynchronized <- false
+    
 
     perf count "Series Add" (fun _ ->
       smap.Value.Add(0L, 0.0f)
       for i in 2L..count do
         smap.Value.Add(i, float32 <| i)
     )
+    
+    //smap.Value.Complete()
 
     for i in 0..0 do
       perf count "Series Read" (fun _ ->

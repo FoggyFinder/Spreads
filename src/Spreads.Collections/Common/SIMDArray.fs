@@ -590,7 +590,7 @@ module SIMD =
     let count = Vector<'T>.Count
     if count <> Vector<'U>.Count then invalidArg "array" "Output type must have the same width as input type."    
     
-    let result = Impl.ArrayPool<'U>.Rent(segment.Count) //Array.zeroCreate segment.Array.Length //
+    let result = Array.zeroCreate segment.Array.Length // Impl.ArrayPool<'U>.Rent(segment.Count) //
     
     let mutable i = segment.Offset
     let length = i + segment.Count
