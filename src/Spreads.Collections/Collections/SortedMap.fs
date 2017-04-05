@@ -383,7 +383,8 @@ type SortedMap<'K,'V>
       // that an irregular becomes a regular one, and such check is always done on
       // bucket switch in SHM (TODO really? check) and before serialization
       // the 99% use case is when we load data from a sequential stream or deserialize a map with already regularized keys
-    this.size <- this.size + 1
+    //Volatile.Write(&this.size, this.size + 1)
+    Interlocked.Increment(&this.size)
     this.NotifyUpdate(true)
 
 
@@ -1606,6 +1607,48 @@ and
     
     [<MethodImplAttribute(MethodImplOptions.AggressiveInlining)>]
     member this.MoveNext() =
+      let mutable newIndex = this.index
+      let mutable newKey = this.currentKey
+      let mutable newValue = this.currentValue
+
+      let mutable result = false
+      let mutable retry = true
+      while retry do
+        retry <- this.source.isSynchronized
+        //let orderVersion = this.source.orderVersion // no need for this Volatile.Read(&this.source.orderVersion)
+        let size = Volatile.Read(&this.source.size)
+        result <-
+        /////////// Start read-locked code /////////////
+          newIndex <- this.index + 1
+          if newIndex < size then
+            newKey <- this.source.GetKeyByIndexUnchecked(newIndex)
+            newValue <- this.source.values.[newIndex]
+            true
+          else
+            false
+        /////////// End read-locked code /////////////
+        if retry then
+          if result then
+            // need to check if order version is the same, if true then we are done
+            let orderVersion2 = Volatile.Read(&this.source.orderVersion)
+            if this.cursorVersion = orderVersion2 then
+              retry <- false
+            else
+              raise (new OutOfOrderKeyException<'K>(this.currentKey, "SortedMap order was changed since last move. Catch OutOfOrderKeyException and use its CurrentKey property together with MoveAt(key, Lookup.GT) to recover."))
+          else
+            // need to check if we missed size increase after first read
+            let size2 = Volatile.Read(&this.source.size)
+            if size = size2 then
+              // size is the same, stop loop and return false
+              retry <- false
+      if result then       
+        this.index <- newIndex
+        this.currentKey <- newKey
+        this.currentValue <- newValue
+      result
+
+    [<MethodImplAttribute(MethodImplOptions.AggressiveInlining)>]
+    member this.MoveNextOld() =
       let mutable newIndex = this.index
       let mutable newKey = this.currentKey
       let mutable newValue = this.currentValue
