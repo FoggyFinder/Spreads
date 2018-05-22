@@ -13,6 +13,8 @@ namespace FSharp.Control.Tasks
 open System
 open System.Threading.Tasks
 open System.Runtime.CompilerServices
+open System.Runtime.InteropServices
+open Spreads.Utils
 
 // This module is not really obsolete, but it's not intended to be referenced directly from user code.
 // However, it can't be private because it is used within inline functions that *are* user-visible.
@@ -22,22 +24,37 @@ module TaskBuilder =
     /// Represents the state of a computation:
     /// either awaiting something with a continuation,
     /// or completed with a return value.
+    [<Struct>]
     type Step<'a> =
-        | Await of ICriticalNotifyCompletion * (unit -> Step<'a>)
-        | Return of 'a
+        | Await of await: ICriticalNotifyCompletion * IStepContinuation<'a>
+        | Return of ret: 'a
         /// We model tail calls explicitly, but still can't run them without O(n) memory usage.
-        | ReturnFrom of 'a Task
+        | ReturnFrom of retf: 'a Task
     /// Implements the machinery of running a `Step<'m, 'm>` as a task returning a continuation task.
-    and StepStateMachine<'a>(firstStep) as this =
-        let methodBuilder = AsyncTaskMethodBuilder<'a Task>()
+    and IStepContinuation<'a> =
+        abstract member Next: [<Out>]value:byref<Step<'a>> -> unit
+    and StepStateMachine<'a>(firstStep:byref<Step<'a>>) as this =
+        let mutable methodBuilder = AsyncTaskMethodBuilder<'a Task>()
         /// The continuation we left off awaiting on our last MoveNext().
-        let mutable continuation = fun () -> firstStep
+        let mutable continuation: IStepContinuation<'a> = 
+          { new IStepContinuation<'a> with
+              member __.Next([<Out>]value:byref<Step<'a>>) = value <- firstStep
+          }
         /// Returns next pending awaitable or null if exiting (including tail call).
         let nextAwaitable() =
             try
-                match continuation() with
+                let mutable step = Unchecked.defaultof<_>
+                continuation.Next(&step)
+                match step with
                 | Return r ->
-                    methodBuilder.SetResult(Task.FromResult(r))
+                    if typedefof<'a> = typedefof<bool> then
+                      let rb : bool = unbox(box(r))
+                      if rb then
+                        methodBuilder.SetResult(unbox(box(TaskUtil.TrueTask)))
+                      else
+                        methodBuilder.SetResult(unbox(box(TaskUtil.FalseTask)))
+                    else
+                      methodBuilder.SetResult(Task.FromResult(r))
                     null
                 | ReturnFrom t ->
                     methodBuilder.SetResult(t)
@@ -75,7 +92,7 @@ module TaskBuilder =
     let zero = Return ()
 
     /// Used to return a value.
-    let ret (x : 'a) = Return x
+    let ret (x : 'a) (step:byref<'a Step>) = step <- Return x
 
     type Binder<'out> =
         // We put the output generic parameter up here at the class level, so it doesn't get subject to
@@ -94,12 +111,16 @@ module TaskBuilder =
                                             and ^awt :> ICriticalNotifyCompletion 
                                             and ^awt : (member get_IsCompleted : unit -> bool)
                                             and ^awt : (member GetResult : unit -> ^inp) >
-            (abl : ^abl, continuation : ^inp -> 'out Step) : 'out Step =
+            (abl : ^abl, continuation : ^inp -> byref<'out Step> -> unit, outStep:byref<'out Step>) : unit =
                 let awt = (^abl : (member GetAwaiter : unit -> ^awt)(abl)) // get an awaiter from the awaitable
                 if (^awt : (member get_IsCompleted : unit -> bool)(awt)) then // shortcut to continue immediately
-                    continuation (^awt : (member GetResult : unit -> ^inp)(awt))
+                    continuation (^awt : (member GetResult : unit -> ^inp)(awt)) &outStep
                 else
-                    Await (awt, fun () -> continuation (^awt : (member GetResult : unit -> ^inp)(awt)))
+                    outStep <- 
+                      Await (awt, 
+                        { new IStepContinuation<'out> with
+                            member __.Next([<Out>]x:byref<Step<'out>>) = continuation (^awt : (member GetResult : unit -> ^inp)(awt)) &x
+                        })
 
         static member inline GenericAwaitConfigureFalse< ^tsk, ^abl, ^awt, ^inp
                                                         when ^tsk : (member ConfigureAwait : bool -> ^abl)
@@ -107,126 +128,152 @@ module TaskBuilder =
                                                         and ^awt :> ICriticalNotifyCompletion 
                                                         and ^awt : (member get_IsCompleted : unit -> bool)
                                                         and ^awt : (member GetResult : unit -> ^inp) >
-            (tsk : ^tsk, continuation : ^inp -> 'out Step) : 'out Step =
+            (tsk : ^tsk, continuation : ^inp -> byref<'out Step> -> unit, outStep:byref<'out Step>) : unit =
                 let abl = (^tsk : (member ConfigureAwait : bool -> ^abl)(tsk, false))
-                Binder<'out>.GenericAwait(abl, continuation)
+                Binder<'out>.GenericAwait(abl, continuation, &outStep)
 
     /// Special case of the above for `Task<'a>`. Have to write this out by hand to avoid confusing the compiler
     /// trying to decide between satisfying the constraints with `Task` or `Task<'a>`.
-    let bindTask (task : 'a Task) (continuation : 'a -> Step<'b>) =
+    let bindTask (task : 'a Task) (continuation : 'a -> byref<Step<'b>> -> unit) (outStep:byref<'b Step>) =
         let awt = task.GetAwaiter()
         if awt.IsCompleted then // Proceed to the next step based on the result we already have.
-            continuation(awt.GetResult())
+            continuation (awt.GetResult()) &outStep
         else // Await and continue later when a result is available.
-            Await (awt, (fun () -> continuation(awt.GetResult())))
+            outStep <- 
+              Await (awt, 
+                { new IStepContinuation<_> with
+                    member __.Next([<Out>]x:byref<Step<_>>) = continuation (awt.GetResult()) &x
+                }
+              )
 
     /// Special case of the above for `Task<'a>`, for the context-insensitive builder.
     /// Have to write this out by hand to avoid confusing the compiler thinking our built-in bind method
     /// defined on the builder has fancy generic constraints on inp and out parameters.
-    let bindTaskConfigureFalse (task : 'a Task) (continuation : 'a -> Step<'b>) =
+    let bindTaskConfigureFalse (task : 'a Task) (continuation : 'a -> byref<Step<'b>> -> unit) (outStep:byref<'b Step>) =
         let awt = task.ConfigureAwait(false).GetAwaiter()
         if awt.IsCompleted then // Proceed to the next step based on the result we already have.
-            continuation(awt.GetResult())
+            continuation (awt.GetResult()) &outStep
         else // Await and continue later when a result is available.
-            Await (awt, (fun () -> continuation(awt.GetResult())))
+            outStep <- 
+              Await (awt, 
+                { new IStepContinuation<_> with
+                    member __.Next([<Out>]x:byref<Step<_>>) = continuation (awt.GetResult()) &x
+                }              
+              )
 
     /// Chains together a step with its following step.
     /// Note that this requires that the first step has no result.
     /// This prevents constructs like `task { return 1; return 2; }`.
-    let rec combine (step : Step<unit>) (continuation : unit -> Step<'b>) =
+    let rec combine (step : byref<Step<unit>>) (continuation : IStepContinuation<_>) (outStep:byref<'b Step>) =
         match step with
-        | Return _ -> continuation()
+        | Return _ -> continuation.Next(&outStep)
         | ReturnFrom t ->
-            Await (t.GetAwaiter(), continuation)
+            outStep <- Await (t.GetAwaiter(), continuation)
         | Await (awaitable, next) ->
-            Await (awaitable, fun () -> combine (next()) continuation)
+            outStep <- 
+              Await (awaitable,
+                { new IStepContinuation<_> with
+                    member __.Next([<Out>]x:byref<Step<_>>) = combine (let mutable unitx = Unchecked.defaultof<_> in next.Next(&unitx);&unitx) continuation &x
+                }  
+                //fun (x:byref<Step<_>>) -> combine (let mutable unitx = Unchecked.defaultof<_> in next(&unitx);&unitx) continuation &x
+              )
 
     /// Builds a step that executes the body while the condition predicate is true.
-    let whileLoop (cond : unit -> bool) (body : unit -> Step<unit>) =
-        if cond() then
-            // Create a self-referencing closure to test whether to repeat the loop on future iterations.
-            let rec repeat () =
-                if cond() then
-                    let body = body()
-                    match body with
-                    | Return _ -> repeat()
-                    | ReturnFrom t -> Await(t.GetAwaiter(), repeat)
-                    | Await (awaitable, next) ->
-                        Await (awaitable, fun () -> combine (next()) repeat)
-                else zero
-            // Run the body the first time and chain it to the repeat logic.
-            combine (body()) repeat
-        else zero
+    //let whileLoop (cond : unit -> bool) (body : unit -> Step<unit>) =
+    //    if cond() then
+    //        // Create a self-referencing closure to test whether to repeat the loop on future iterations.
+    //        let rec repeat () =
+    //            if cond() then
+    //                let body = body()
+    //                match body with
+    //                | Return _ -> repeat()
+    //                | ReturnFrom t -> Await(t.GetAwaiter(), repeat)
+    //                | Await (awaitable, next) ->
+    //                    Await (awaitable, fun () -> combine (next()) repeat)
+    //            else zero
+    //        // Run the body the first time and chain it to the repeat logic.
+    //        combine (body()) repeat
+    //    else zero
 
     /// Wraps a step in a try/with. This catches exceptions both in the evaluation of the function
     /// to retrieve the step, and in the continuation of the step (if any).
-    let rec tryWith(step : unit -> Step<'a>) (catch : exn -> Step<'a>) =
-        try
-            match step() with
-            | Return _ as i -> i
-            | ReturnFrom t ->
-                let awaitable = t.GetAwaiter()
-                Await(awaitable, fun () ->
-                    try
-                        awaitable.GetResult() |> Return
-                    with
-                    | exn -> catch exn)
-            | Await (awaitable, next) -> Await (awaitable, fun () -> tryWith next catch)
-        with
-        | exn -> catch exn
+    //let rec tryWith(step : unit -> Step<'a>) (catch : exn -> Step<'a>) =
+    //    try
+    //        match step() with
+    //        | Return _ as i -> i
+    //        | ReturnFrom t ->
+    //            let awaitable = t.GetAwaiter()
+    //            Await(awaitable, fun () ->
+    //                try
+    //                    awaitable.GetResult() |> Return
+    //                with
+    //                | exn -> catch exn)
+    //        | Await (awaitable, next) -> Await (awaitable, fun () -> tryWith next catch)
+    //    with
+    //    | exn -> catch exn
 
     /// Wraps a step in a try/finally. This catches exceptions both in the evaluation of the function
     /// to retrieve the step, and in the continuation of the step (if any).
-    let rec tryFinally (step : unit -> Step<'a>) fin =
-        let step =
-            try step()
-            // Important point: we use a try/with, not a try/finally, to implement tryFinally.
-            // The reason for this is that if we're just building a continuation, we definitely *shouldn't*
-            // execute the `fin()` part yet -- the actual execution of the asynchronous code hasn't completed!
-            with
-            | _ ->
-                fin()
-                reraise()
-        match step with
-        | Return _ as i ->
-            fin()
-            i
-        | ReturnFrom t ->
-            let awaitable = t.GetAwaiter()
-            Await(awaitable, fun () ->
-                let result =
-                    try
-                        awaitable.GetResult() |> Return
-                    with
-                    | _ ->
-                        fin()
-                        reraise()
-                fin() // if we got here we haven't run fin(), because we would've reraised after doing so
-                result)
-        | Await (awaitable, next) ->
-            Await (awaitable, fun () -> tryFinally next fin)
+    //let rec tryFinally (step : unit -> Step<'a>) fin =
+    //    let step =
+    //        try step()
+    //        // Important point: we use a try/with, not a try/finally, to implement tryFinally.
+    //        // The reason for this is that if we're just building a continuation, we definitely *shouldn't*
+    //        // execute the `fin()` part yet -- the actual execution of the asynchronous code hasn't completed!
+    //        with
+    //        | _ ->
+    //            fin()
+    //            reraise()
+    //    match step with
+    //    | Return _ as i ->
+    //        fin()
+    //        i
+    //    | ReturnFrom t ->
+    //        let awaitable = t.GetAwaiter()
+    //        Await(awaitable, fun () ->
+    //            let result =
+    //                try
+    //                    awaitable.GetResult() |> Return
+    //                with
+    //                | _ ->
+    //                    fin()
+    //                    reraise()
+    //            fin() // if we got here we haven't run fin(), because we would've reraised after doing so
+    //            result)
+    //    | Await (awaitable, next) ->
+    //        Await (awaitable, fun () -> tryFinally next fin)
 
     /// Implements a using statement that disposes `disp` after `body` has completed.
-    let using (disp : #IDisposable) (body : _ -> Step<'a>) =
-        // A using statement is just a try/finally with the finally block disposing if non-null.
-        tryFinally
-            (fun () -> body disp)
-            (fun () -> if not (isNull (box disp)) then disp.Dispose())
+    //let using (disp : #IDisposable) (body : _ -> Step<'a>) =
+    //    // A using statement is just a try/finally with the finally block disposing if non-null.
+    //    tryFinally
+    //        (fun () -> body disp)
+    //        (fun () -> if not (isNull (box disp)) then disp.Dispose())
 
     /// Implements a loop that runs `body` for each element in `sequence`.
-    let forLoop (sequence : 'a seq) (body : 'a -> Step<unit>) =
-        // A for loop is just a using statement on the sequence's enumerator...
-        using (sequence.GetEnumerator())
-            // ... and its body is a while loop that advances the enumerator and runs the body on each element.
-            (fun e -> whileLoop e.MoveNext (fun () -> body e.Current))
+    //let forLoop (sequence : 'a seq) (body : 'a -> Step<unit>) =
+    //    // A for loop is just a using statement on the sequence's enumerator...
+    //    using (sequence.GetEnumerator())
+    //        // ... and its body is a while loop that advances the enumerator and runs the body on each element.
+    //        (fun e -> whileLoop e.MoveNext (fun () -> body e.Current))
 
     /// Runs a step as a task -- with a short-circuit for immediately completed steps.
     let run (firstStep : unit -> Step<'a>) =
         try
             match firstStep() with
-            | Return x -> Task.FromResult(x)
+            | Return x -> 
+              if typedefof<'a> = typedefof<bool> then
+                let rb : bool = unbox(box(x))
+                if rb then
+                  unbox(box(TaskUtil.TrueTask))
+                else
+                  unbox(box(TaskUtil.FalseTask))
+              else
+                Task.FromResult(x)
             | ReturnFrom t -> t
-            | Await _ as step -> StepStateMachine<'a>(step).Run().Unwrap() // sadly can't do tail recursion
+            | Await _ as step -> 
+              let mutable step = step
+              StepStateMachine<'a>(&step).Run().Unwrap() // sadly can't do tail recursion
         // Any exceptions should go on the task, rather than being thrown from this call.
         // This matches C# behavior where you won't see an exception until awaiting the task,
         // even if it failed before reaching the first "await".
@@ -243,44 +290,71 @@ module TaskBuilder =
     type Priority2 = IComparable
 
     type BindS = Priority1 with
-        static member inline (>>=) (_:Priority2, taskLike : 't) = fun (k:  _ -> 'b Step) -> Binder<'b>.GenericAwait (taskLike, k): 'b Step
-        static member        (>>=) (  Priority1, task: 'a Task) = fun (k: 'a -> 'b Step) -> bindTask task k                      : 'b Step
-        static member        (>>=) (  Priority1, a  : 'a Async) = fun (k: 'a -> 'b Step) -> bindTask (Async.StartAsTask a) k     : 'b Step
+        static member inline (>>=) (_:Priority2, taskLike : 't) = 
+          fun (k:  _ -> byref<'b Step> -> unit) -> 
+            (let mutable bs = Unchecked.defaultof<_> in Binder<'b>.GenericAwait (taskLike, k, &bs); bs) : 'b Step
+        static member        (>>=) (  Priority1, task: 'a Task) = 
+          fun (k: 'a -> byref<'b Step> -> unit) -> (let mutable bs = Unchecked.defaultof<_> in bindTask task k &bs;bs)                     : 'b Step
+        static member        (>>=) (  Priority1, a  : 'a Async) = 
+          fun (k: 'a -> byref<'b Step> -> unit) -> (let mutable bs = Unchecked.defaultof<_> in bindTask (Async.StartAsTask a) k &bs; bs)    : 'b Step
 
     type ReturnFromS = Priority1 with
-        static member inline ($) (Priority1, taskLike    ) = Binder<_>.GenericAwait (taskLike, ret)
-        static member        ($) (Priority1, a : 'a Async) = bindTask (Async.StartAsTask a) ret : Step<'a>
+        static member inline ($) (Priority1, taskLike    ) = 
+          let mutable s = Unchecked.defaultof<_>
+          Binder<_>.GenericAwait (taskLike, ret, &s)
+          s
+        static member        ($) (Priority1, a : 'a Async) = 
+          let mutable s = Unchecked.defaultof<_>
+          bindTask (Async.StartAsTask a) ret &s
+          s : Step<'a>
 
-    type BindI = Priority1 with
-        static member inline (>>=) (_:Priority3, taskLike            : 't) = fun (k :  _ -> 'b Step) -> Binder<'b>.GenericAwait (taskLike, k)                          : 'b Step
-        static member inline (>>=) (_:Priority2, configurableTaskLike: 't) = fun (k :  _ -> 'b Step) -> Binder<'b>.GenericAwaitConfigureFalse (configurableTaskLike, k): 'b Step
-        static member        (>>=) (  Priority1, task: 'a Task           ) = fun (k : 'a -> 'b Step) -> bindTaskConfigureFalse task k                                  : 'b Step
-        static member        (>>=) (  Priority1, a   : 'a Async          ) = fun (k : 'a -> 'b Step) -> bindTaskConfigureFalse (Async.StartAsTask a) k                 : 'b Step
+    //type BindI = Priority1 with
+    //    static member inline (>>=) (_:Priority3, taskLike            : 't) = 
+    //      fun (k :  _ -> 'b Step) -> Binder<'b>.GenericAwait (taskLike, k)                          : 'b Step
+    //    static member inline (>>=) (_:Priority2, configurableTaskLike: 't) = 
+    //      fun (k :  _ -> 'b Step) -> Binder<'b>.GenericAwaitConfigureFalse (configurableTaskLike, k): 'b Step
+    //    static member        (>>=) (  Priority1, task: 'a Task           ) = 
+    //      fun (k : 'a -> 'b Step) -> bindTaskConfigureFalse task k                                  : 'b Step
+    //    static member        (>>=) (  Priority1, a   : 'a Async          ) = 
+    //      fun (k : 'a -> 'b Step) -> bindTaskConfigureFalse (Async.StartAsTask a) k                 : 'b Step
 
-    type ReturnFromI = Priority1 with
-        static member inline ($) (_:Priority2, taskLike            ) = Binder<_>.GenericAwait(taskLike, ret)
-        static member inline ($) (  Priority1, configurableTaskLike) = Binder<_>.GenericAwaitConfigureFalse(configurableTaskLike, ret)
-        static member        ($) (  Priority1, a   : 'a Async      ) = bindTaskConfigureFalse (Async.StartAsTask a) ret
+    //type ReturnFromI = Priority1 with
+    //    static member inline ($) (_:Priority2, taskLike            ) = Binder<_>.GenericAwait(taskLike, ret)
+    //    static member inline ($) (  Priority1, configurableTaskLike) = Binder<_>.GenericAwaitConfigureFalse(configurableTaskLike, ret)
+    //    static member        ($) (  Priority1, a   : 'a Async      ) = bindTaskConfigureFalse (Async.StartAsTask a) ret
 
 
     type TaskBuilder() =
         // These methods are consistent between the two builders.
+        [<MethodImplAttribute(MethodImplOptions.AggressiveInlining)>]
         member __.Delay(f : unit -> Step<_>) = f
+        [<MethodImplAttribute(MethodImplOptions.AggressiveInlining)>]
         member __.Run(f : unit -> Step<'m>) = run f
+        [<MethodImplAttribute(MethodImplOptions.AggressiveInlining)>]
         member __.Zero() = zero
-        member __.Return(x) = ret x
-        member __.Combine(step : unit Step, continuation) = combine step continuation
-        member __.While(condition : unit -> bool, body : unit -> unit Step) = whileLoop condition body
-        member __.For(sequence : _ seq, body : _ -> unit Step) = forLoop sequence body
-        member __.TryWith(body : unit -> _ Step, catch : exn -> _ Step) = tryWith body catch
-        member __.TryFinally(body : unit -> _ Step, fin : unit -> unit) = tryFinally body fin
+        [<MethodImplAttribute(MethodImplOptions.AggressiveInlining)>]
+        member __.Return(x) = let mutable s = Unchecked.defaultof<_> in ret x &s; s
+        [<MethodImplAttribute(MethodImplOptions.AggressiveInlining)>]
+        member __.Combine(step : unit Step, continuation) = 
+          let mutable step = step
+          combine &step continuation
+        //[<MethodImplAttribute(MethodImplOptions.AggressiveInlining)>]
+        //member __.While(condition : unit -> bool, body : unit -> unit Step) = whileLoop condition body
+        //[<MethodImplAttribute(MethodImplOptions.AggressiveInlining)>]
+        //member __.For(sequence : _ seq, body : _ -> unit Step) = forLoop sequence body
+        //[<MethodImplAttribute(MethodImplOptions.AggressiveInlining)>]
+        //member __.TryWith(body : unit -> _ Step, catch : exn -> _ Step) = tryWith body catch
+        //[<MethodImplAttribute(MethodImplOptions.AggressiveInlining)>]
+        //member __.TryFinally(body : unit -> _ Step, fin : unit -> unit) = tryFinally body fin
+        [<MethodImplAttribute(MethodImplOptions.AggressiveInlining)>]
         member __.Using(disp : #IDisposable, body : #IDisposable -> _ Step) = using disp body
+        [<MethodImplAttribute(MethodImplOptions.AggressiveInlining)>]
         member __.ReturnFrom a : _ Step = ReturnFrom a
 
 // Don't warn about our use of the "obsolete" module we just defined (see notes at start of file).
 #nowarn "44"
 
-[<AutoOpen>]
+
 module ContextSensitive =
     open TaskBuilder
 
@@ -295,18 +369,20 @@ module ContextSensitive =
         member inline __.Bind (task, continuation : 'a -> 'b Step) : 'b Step = (BindS.Priority1 >>= task) continuation
         member inline __.ReturnFrom a                              : 'b Step = ReturnFromS.Priority1 $ a
 
-module ContextInsensitive =
-    open TaskBuilder
+//[<AutoOpen>]
+//module ContextInsensitive =
+//    open TaskBuilder
 
-    /// Builds a `System.Threading.Tasks.Task<'a>` similarly to a C# async/await method, but with
-    /// all awaited tasks automatically configured *not* to resume on the captured context.
-    /// This is often preferable when writing library code that is not context-aware, but undesirable when writing
-    /// e.g. code that must interact with user interface controls on the same thread as its caller.
-    let task = TaskBuilder()
+//    /// Builds a `System.Threading.Tasks.Task<'a>` similarly to a C# async/await method, but with
+//    /// all awaited tasks automatically configured *not* to resume on the captured context.
+//    /// This is often preferable when writing library code that is not context-aware, but undesirable when writing
+//    /// e.g. code that must interact with user interface controls on the same thread as its caller.
+//    let task = TaskBuilder()
 
-    [<Obsolete("It is no longer necessary to wrap untyped System.Thread.Tasks.Task objects with \"unitTask\".")>]
-    let unitTask (t : Task) = t.ConfigureAwait(false)
+//    [<Obsolete("It is no longer necessary to wrap untyped System.Thread.Tasks.Task objects with \"unitTask\".")>]
+//    let unitTask (t : Task) = t.ConfigureAwait(false)
     
-    type TaskBuilder with
-        member inline __.Bind (task, continuation : 'a -> 'b Step) : 'b Step = (BindI.Priority1 >>= task) continuation
-        member inline __.ReturnFrom a                              : 'b Step = ReturnFromI.Priority1 $ a
+//    type TaskBuilder with
+//        member inline __.Bind (task, continuation : 'a -> 'b Step) : 'b Step = (BindI.Priority1 >>= task) continuation
+//        member inline __.ReturnFrom a                              : 'b Step = ReturnFromI.Priority1 $ a
+
